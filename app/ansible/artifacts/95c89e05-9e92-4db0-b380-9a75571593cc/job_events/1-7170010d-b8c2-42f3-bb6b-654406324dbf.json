@@ -1,0 +1,1 @@
+{"event": "verbose", "uuid": "7170010d-b8c2-42f3-bb6b-654406324dbf", "counter": 1, "stdout": "The command was not found or was not executable: ansible-playbook.", "start_line": 0, "end_line": 1, "runner_ident": "95c89e05-9e92-4db0-b380-9a75571593cc", "created": "2025-02-11T11:26:02.299939+00:00"}

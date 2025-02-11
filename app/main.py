@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request
-from app.routers import users, logs, ssh
+from app.routers import users, logs, ssh, ansible
 from datetime import datetime
 from app.mongodb import logs_collection
 from app.schemas import LogEntry
@@ -27,6 +27,7 @@ async def log_requests(request: Request, call_next):
 app.include_router(users.router)
 app.include_router(logs.router)
 app.include_router(ssh.router, prefix="/ssh")
+app.include_router(ansible.router)
 
 
 @app.get("/")

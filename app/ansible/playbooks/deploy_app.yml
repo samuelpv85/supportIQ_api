@@ -1,0 +1,28 @@
+---
+- name: Recopilar información del sistema
+  hosts: all
+  gather_facts: no
+  tasks:
+    - name: Obtener el nombre del kernel
+      command: uname -r
+      register: kernel_version
+
+    - name: Mostrar la versión del kernel
+      debug:
+        msg: "Versión del kernel: {{ kernel_version.stdout }}"
+
+    - name: Obtener la fecha y hora actual
+      command: date
+      register: system_date
+
+    - name: Mostrar la fecha y hora
+      debug:
+        msg: "Fecha y hora actual: {{ system_date.stdout }}"
+
+    - name: Obtener el nombre del host
+      command: hostname
+      register: host_name
+
+    - name: Mostrar el nombre del host
+      debug:
+        msg: "Nombre del host: {{ host_name.stdout }}"
