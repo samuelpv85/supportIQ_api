@@ -1,0 +1,39 @@
+# 🚀 Archivos y carpetas del entorno virtual (evita subir dependencias innecesarias)
+venv/
+env/
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# 🔑 Variables de entorno y credenciales (asegura que no subas contraseñas)
+.env
+*.env
+
+# 📦 Dependencias y compilaciones (evita subir archivos generados)
+node_modules/
+dist/
+build/
+.cache/
+*.egg-info/
+
+# 🗑 Archivos de logs (evita archivos de depuración locales)
+*.log
+logs/
+debug.log
+
+# 💻 Archivos específicos del sistema operativo (ignora archivos generados por Mac y Windows)
+.DS_Store
+Thumbs.db
+
+# 🛠 IDEs y editores (excluye configuraciones de desarrollo local)
+.vscode/
+.idea/
+*.iml
+*.sublime-workspace
+
+# 📄 Archivos de Docker (si usas Docker en el proyecto)
+docker-compose.override.yml
