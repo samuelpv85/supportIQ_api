@@ -1,0 +1,707 @@
+=== Archivo: ./app/routers/users.py ===
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+from app.database import SessionLocal
+from app.schemas import UserCreate, UserResponse
+from app.crud import create_user, get_user
+
+router = APIRouter(prefix="/users", tags=["Users"])
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@router.post("/", response_model=UserResponse)
+def create_new_user(user: UserCreate, db: Session = Depends(get_db)):
+    return create_user(db, user)
+
+@router.get("/{user_id}", response_model=UserResponse)
+def get_user_by_id(user_id: int, db: Session = Depends(get_db)):
+    user = get_user(db, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+# APIRouter() → Agrupa las rutas de usuarios.
+# @router.post("/") → Endpoint para crear usuarios.
+# @router.get("/{user_id}") → Endpoint para obtener un usuario por ID.
+
+=== Archivo: ./app/routers/__init__.py ===
+
+
+=== Archivo: ./app/routers/logs.py ===
+from fastapi import APIRouter
+from app.mongodb import logs_collection
+from app.schemas import LogEntry
+from typing import List
+
+router = APIRouter(prefix="/logs", tags=["Logs"])
+
+@router.get("/", response_model=List[LogEntry])
+async def get_logs():
+    logs = await logs_collection.find().to_list(100)
+    return logs
+
+
+
+# @router.get("/") → Endpoint para obtener los logs.
+# logs_collection.find().to_list(100) → Recupera hasta 100 registros de MongoDB.
+
+=== Archivo: ./app/routers/ssh.py ===
+from fastapi import APIRouter, HTTPException
+from app.models.ssh_model import SSHRequest
+from services.ssh_client import SSHClient
+
+router = APIRouter()
+
+@router.post("/execute")
+def execute_command(request: SSHRequest):
+    ssh = SSHClient(request.server_ip, request.username, request.password, request.key_file)
+
+    if not ssh.connect():
+        raise HTTPException(status_code=400, detail="❌ Error al conectar vía SSH")
+
+    output = ssh.execute_command(request.command)
+    ssh.close()
+
+    return {"server": request.server_ip, "output": output}
+
+
+
+# @router.post("/execute") → Endpoint para recibir y ejecutar comandos.
+# SSHRequest → Modelo de datos que define los parámetros requeridos.
+# ssh.connect() → Establece conexión SSH con el servidor remoto.
+# ssh.execute_command(request.command) → Ejecuta el comando enviado.
+# return {"server": request.server_ip, "output": output} → Devuelve la salida del comando.
+
+=== Archivo: ./app/routers/ansible.py ===
+from fastapi import APIRouter, HTTPException
+from app.ansible.ansible_runner import run_playbook
+
+router = APIRouter()
+
+@router.post("/run-playbook/{playbook_name}")
+def execute_playbook(playbook_name: str):
+    playbook_path = f"app/ansible/playbooks/{playbook_name}.yml"
+    # inventory_path = f"app/ansible/inventory.yml"  # O .ini según el caso
+    try:
+        output = run_playbook(playbook_path)
+        return {"playbook": playbook_name, "output": output}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+# @router.post("/run-playbook/{playbook_name}") → Recibe el nombre del playbook y lo ejecuta.
+# run_playbook(playbook_path) → Llama a la función que ejecuta Ansible.
+
+=== Archivo: ./app/routers/tasks.py ===
+from fastapi import APIRouter
+from app.tasks import process_data
+
+router = APIRouter()
+
+@router.post("/tasks/")
+async def create_task(data: dict):
+    """Recibe datos y ejecuta la tarea en segundo plano."""
+    task = process_data.apply_async(args=[data])
+    return {"task_id": task.id, "status": "Task started"}
+
+@router.get("/tasks/{task_id}")
+async def get_task_status(task_id: str):
+    """Consulta el estado de una tarea específica."""
+    from app.cel import celery_app
+    task_result = celery_app.AsyncResult(task_id)
+    return {"task_id": task_id, "status": task_result.status, "result": task_result.result}
+
+
+# POST /tasks/ → Inicia una tarea en segundo plano.
+# GET /tasks/{task_id} → Consulta el estado de una tarea en ejecución.
+
+=== Archivo: ./app/main.py ===
+from fastapi import FastAPI, Request
+from app.routers import users, logs, ssh, ansible, tasks
+from datetime import datetime
+from app.mongodb import logs_collection
+from app.schemas import LogEntry
+import json
+
+app = FastAPI(title="API con FastAPI, PostgreSQL, Mongo, Streamlit - supportIQ")
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    response = await call_next(request)
+    
+    log_data = LogEntry(
+        timestamp=datetime.utcnow(),
+        method=request.method,
+        path=str(request.url.path),
+        status_code=response.status_code,
+        client_ip=request.client.host
+    ).dict()
+
+    await logs_collection.insert_one(log_data)  # Guardar log en MongoDB
+    
+    return response
+
+
+app.include_router(users.router)
+app.include_router(logs.router)
+app.include_router(ssh.router, prefix="/ssh")
+app.include_router(ansible.router)
+app.include_router(tasks.router)
+
+
+@app.get("/")
+def root():
+    return {"message": "Bienvenido a la API supportIQ"}
+
+
+
+# FastAPI(title="API con FastAPI y PostgreSQL") → Define la app.
+# app.include_router(users.router) → Agrega las rutas de usuarios.
+
+# @app.middleware("http") → Intercepta cada petición.
+# request.method → Captura el método HTTP.
+# request.url.path → Obtiene la ruta accedida.
+# request.client.host → Obtiene la IP del cliente.
+# await logs_collection.insert_one(log_data) → Guarda el log en MongoDB.
+
+=== Archivo: ./app/config.py ===
+import configparser
+import os
+
+# Obtener la ruta absoluta del archivo config.ini
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(BASE_DIR, "../config.ini")
+
+# Cargar configuración desde config.ini
+config = configparser.ConfigParser()
+config.read(CONFIG_PATH)
+
+# Construir la URL de conexión a PostgreSQL
+DB_CONFIG = config["database"]
+DATABASE_URL = f"postgresql://{DB_CONFIG['USER']}:{DB_CONFIG['PASSWORD']}@{DB_CONFIG['HOST']}:{DB_CONFIG['PORT']}/{DB_CONFIG['NAME']}"
+
+# Construir la URL de conexión a MONGP
+DB_CONFIG_MONGO = config["databaseMongo"]
+MONGODB_URL = f"mongodb://{DB_CONFIG_MONGO['USER']}:{DB_CONFIG_MONGO['PASSWORD']}@{DB_CONFIG_MONGO['HOST']}:{DB_CONFIG_MONGO['PORT']}"
+# MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://admin:password@localhost:27017")
+MONGO_DB_NAME = "audit_logs"
+
+
+
+
+# configparser.ConfigParser() → Carga el archivo .ini.
+# config.read(CONFIG_PATH) → Lee las propiedades de la sección [database].
+# DATABASE_URL → Se genera dinámicamente con los valores del archivo config.ini.
+
+# MONGODB_URL → Obtiene la URL de MongoDB.
+# MONGO_DB_NAME → Nombre de la base de datos de logs.
+
+=== Archivo: ./app/database.py ===
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+from app.config import DATABASE_URL
+
+# Crear el motor de conexión
+engine = create_engine(DATABASE_URL)
+
+# Crear la sesión de base de datos
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Base para modelos ORM
+Base = declarative_base()
+
+
+# create_engine(DATABASE_URL) → Crea el motor de PostgreSQL.
+# SessionLocal → Manejador de sesiones de SQLAlchemy.
+# Base → Se usará para definir modelos ORM.
+
+=== Archivo: ./app/schemas.py ===
+from pydantic import BaseModel
+from datetime import datetime
+from typing import Optional, Dict, Any
+
+class UserBase(BaseModel):
+    username: str
+
+class UserCreate(UserBase):
+    password: str
+
+class UserResponse(UserBase):
+    id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+# UserBase → Define los campos compartidos.
+# UserCreate → Se usa para recibir datos de creación de usuarios.
+# UserResponse → Se usa para devolver datos en la API.
+
+
+class LogEntry(BaseModel):
+    timestamp: datetime
+    method: str
+    path: str
+    status_code: int
+    client_ip: str
+
+
+
+
+# timestamp: datetime → Fecha y hora de la petición.
+# method: str → Método HTTP (GET, POST, etc.).
+# path: str → Ruta de la API.
+# status_code: int → Código de respuesta HTTP.
+# client_ip: str → IP del cliente.
+
+=== Archivo: ./app/crud.py ===
+from sqlalchemy.orm import Session
+from app.models.models import User
+# from app.models.user_model import User
+from app.schemas import UserCreate
+
+def create_user(db: Session, user: UserCreate):
+    new_user = User(username=user.username, password=user.password)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+def get_user(db: Session, user_id: int):
+    return db.query(User).filter(User.id == user_id).first()
+
+
+
+# create_user() → Inserta un nuevo usuario en la BD.
+# get_user() → Busca un usuario por ID.
+
+=== Archivo: ./app/mongodb.py ===
+from motor.motor_asyncio import AsyncIOMotorClient
+from app.config import MONGODB_URL, MONGO_DB_NAME
+
+client = AsyncIOMotorClient(MONGODB_URL)
+db = client[MONGO_DB_NAME]
+logs_collection = db["logs"]
+
+
+
+# AsyncIOMotorClient(MONGODB_URL) → Conexión asíncrona a MongoDB.
+# db["logs"] → Crea una colección logs en la base de datos.
+
+=== Archivo: ./app/models/ssh_model.py ===
+from pydantic import BaseModel
+from typing import Optional
+from sqlalchemy import Column, Integer, String
+from app.database import Base  # Asegúrate de que 'Base' esté correctamente importado
+
+
+class SSHRequest(BaseModel):
+    server_ip: str
+    username: str
+    password: Optional[str] = None
+    key_file: Optional[str] = None
+    command: str
+
+# BaseModel → Valida los datos de entrada.
+# Optional[str] → Permite que password y key_file sean opcionales.
+
+
+
+class SSHModel(Base):
+    __tablename__ = "ssh_connections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    host = Column(String, nullable=False)
+    user = Column(String, nullable=False)
+    password = Column(String, nullable=False)  # ⚠️ No se recomienda guardar contraseñas en texto plano
+
+=== Archivo: ./app/models/__init__.py ===
+from .ssh_model import SSHModel  # Importa otros modelos aquí si existen
+from .user_model import User  # Agrega el modelo de usuario correctamente
+
+__all__ = ["SSHModel", "User"]
+
+
+=== Archivo: ./app/models/user_model.py ===
+from sqlalchemy import Column, Integer, String
+from app.database import Base
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    password = Column(String)  # 🔹 ¡Recuerda cifrar la contraseña!
+
+
+=== Archivo: ./app/models/models.py ===
+from sqlalchemy import Column, Integer, String, TIMESTAMP
+from sqlalchemy.sql import func
+from app.database import Base
+
+class User(Base):
+    __tablename__ = "users"
+    __table_args__ = {"schema": "app"}  # <--- Definir el esquema aquí
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(50), unique=True, nullable=False)
+    password = Column(String, nullable=False)
+    created_at = Column(TIMESTAMP, server_default=func.now())
+
+
+# __tablename__ = "users" → Define la tabla en PostgreSQL.
+# Column(Integer, primary_key=True, index=True) → Clave primaria.
+# Column(String(50), unique=True, nullable=False) → Nombre de usuario único.
+# Column(TIMESTAMP, server_default=func.now()) → Marca de tiempo automática.
+
+=== Archivo: ./app/ansible/inventory.yml ===
+all:
+  hosts:
+    server1:
+      ansible_host: 10.71.70.55
+      ansible_user: spatino
+      ansible_ssh_private_key_file: ~/.ssh/id_rsa
+    # server2:
+    #   ansible_host: 192.168.1.11
+    #   ansible_user: admin
+    #   ansible_ssh_private_key_file: ~/.ssh/id_rsa
+
+
+=== Archivo: ./app/ansible/ansible_runner.py ===
+# import ansible_runner
+
+# def run_playbook(playbook_path):
+#     try:
+#         result = ansible_runner.run(private_data_dir="app/ansible", playbook=playbook_path)
+#         return result.stdout
+#     except Exception as e:
+#         return str(e)
+
+# ansible_runner.run() → Ejecuta un playbook de Ansible.
+# private_data_dir="ansible" → Define la carpeta donde está el inventario.
+import subprocess
+import os
+
+def run_playbook(playbook_path):
+    try:
+        ansible_bin = "venv/bin/ansible-playbook"
+        inventory_path = f"app/ansible/inventory.yml"  # O .ini según el caso
+        command = [ansible_bin, "-i", inventory_path, playbook_path]
+        
+        result = subprocess.run(command, capture_output=True, text=True)
+        return result.stdout if result.returncode == 0 else result.stderr
+    except Exception as e:
+        return str(e)
+
+
+
+
+
+
+
+
+# import ansible_runner
+# import os
+
+# BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # Directorio del script
+# ANSIBLE_DIR = os.path.join(BASE_DIR, "..", "ansible")  # Ajusta la ruta
+
+# def run_playbook(playbook_name):
+#     playbook_path = os.path.join(ANSIBLE_DIR, "playbooks", f"{playbook_name}.yml")
+
+#     if not os.path.exists(playbook_path):
+#         return f"Playbook {playbook_name}.yml no encontrado en {ANSIBLE_DIR}/playbooks"
+
+#     try:
+#         result = ansible_runner.run(private_data_dir=ANSIBLE_DIR, playbook=playbook_path)
+#         return result.stdout
+#     except Exception as e:
+#         return str(e)
+
+
+
+
+
+
+
+=== Archivo: ./app/ansible/playbooks/deploy_app.yml ===
+---
+- name: Recopilar información del sistema
+  hosts: all
+  gather_facts: no
+  tasks:
+    - name: Obtener el nombre del kernel
+      command: uname -r
+      register: kernel_version
+
+    - name: Mostrar la versión del kernel
+      debug:
+        msg: "Versión del kernel: {{ kernel_version.stdout }}"
+
+    - name: Obtener la fecha y hora actual
+      command: date
+      register: system_date
+
+    - name: Mostrar la fecha y hora
+      debug:
+        msg: "Fecha y hora actual: {{ system_date.stdout }}"
+
+    - name: Obtener el nombre del host
+      command: hostname
+      register: host_name
+
+    - name: Mostrar el nombre del host
+      debug:
+        msg: "Nombre del host: {{ host_name.stdout }}"
+
+
+=== Archivo: ./app/ansible/playbooks/update_servers.yml ===
+
+
+=== Archivo: ./app/ansible/__init__.py ===
+
+
+=== Archivo: ./app/cel.py ===
+from celery import Celery
+
+# Configuración de Celery con Redis como broker
+celery_app = Celery(
+    "supportIQ_tasks",
+    broker="redis://redis_broker:6379/0",
+    backend="redis://redis_broker:6379/0",
+    include=["app.tasks"]
+)
+
+# Configuración opcional para evitar pérdida de tareas
+celery_app.conf.task_acks_late = True
+celery_app.conf.worker_prefetch_multiplier = 1
+celery_app.conf.result_expires = 3600  # Expiración de resultados en 1 hora
+
+
+
+# Celery("supportIQ_tasks") → Define la aplicación Celery.
+# broker="redis://redis_broker:6379/0" → Usa Redis como cola de mensajes.
+# backend="redis://redis_broker:6379/0" → Guarda los resultados en Redis.
+# include=["app.tasks"] → Importa las tareas desde el archivo tasks.py.
+
+=== Archivo: ./app/tasks.py ===
+from time import sleep
+from app.cel import celery_app
+
+@celery_app.task(name="process_data_task")
+def process_data(data: dict):
+    """Simula una tarea de procesamiento pesado."""
+    sleep(5)  # Simula un proceso que tarda 5 segundos
+    return {"status": "completed", "processed_data": data}
+
+
+
+# @celery_app.task → Define una tarea que Celery ejecutará en segundo plano.
+# sleep(5) → Simula un proceso largo.
+# Retorna el estado "completed" cuando termina.
+
+
+=== Archivo: ./.env ===
+
+
+=== Archivo: ./requirements.txt ===
+alembic==1.14.1
+annotated-types==0.7.0
+ansible==11.2.0
+ansible-core==2.18.2
+ansible-runner==2.4.0
+anyio==4.8.0
+bcrypt==4.2.1
+certifi==2025.1.31
+cffi==1.17.1
+click==8.1.8
+cryptography==44.0.0
+decorator==5.1.1
+Deprecated==1.2.18
+dnspython==2.7.0
+email_validator==2.2.0
+fabric==3.2.2
+fastapi==0.115.8
+fastapi-cli==0.0.7
+greenlet==3.1.1
+h11==0.14.0
+httpcore==1.0.7
+httptools==0.6.4
+httpx==0.28.1
+idna==3.10
+invoke==2.2.0
+itsdangerous==2.2.0
+Jinja2==3.1.5
+lockfile==0.12.2
+Mako==1.3.9
+markdown-it-py==3.0.0
+MarkupSafe==3.0.2
+mdurl==0.1.2
+motor==3.7.0
+orjson==3.10.15
+packaging==24.2
+paramiko==3.5.1
+pexpect==4.9.0
+psycopg2==2.9.10
+psycopg2-binary==2.9.10
+ptyprocess==0.7.0
+pycparser==2.22
+pydantic==2.10.6
+pydantic-extra-types==2.10.2
+pydantic-settings==2.7.1
+pydantic_core==2.27.2
+Pygments==2.19.1
+pymongo==4.11.1
+PyNaCl==1.5.0
+python-daemon==3.1.2
+python-dotenv==1.0.1
+python-multipart==0.0.20
+PyYAML==6.0.2
+resolvelib==1.0.1
+rich==13.9.4
+rich-toolkit==0.13.2
+shellingham==1.5.4
+sniffio==1.3.1
+SQLAlchemy==2.0.38
+starlette==0.45.3
+typer==0.15.1
+typing_extensions==4.12.2
+ujson==5.10.0
+uvicorn==0.34.0
+uvloop==0.21.0
+watchfiles==1.0.4
+websockets==14.2
+wrapt==1.17.2
+
+
+=== Archivo: ./docker-compose.yml ===
+
+
+=== Archivo: ./README.md ===
+
+
+=== Archivo: ./config.ini ===
+[database]
+HOST=172.20.0.2
+PORT=5432
+USER=supportIQ
+PASSWORD=supportIQ
+NAME=supportIQ
+
+[databaseMongo]
+MONGO_DB_NAME = audit_logs
+USER=supportIQ
+PASSWORD=supportIQ
+HOST=172.21.0.2
+PORT=27017
+
+
+=== Archivo: ./services/ssh_client.py ===
+import paramiko
+
+class SSHClient:
+    def __init__(self, hostname, username, password=None, key_file=None):
+        self.hostname = hostname
+        self.username = username
+        self.password = password
+        self.key_file = key_file
+        self.client = None
+
+    def connect(self):
+        try:
+            self.client = paramiko.SSHClient()
+            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            if self.key_file:
+                self.client.connect(self.hostname, username=self.username, key_filename=self.key_file)
+            else:
+                self.client.connect(self.hostname, username=self.username, password=self.password)
+
+            return True
+        except Exception as e:
+            print(f"Error al conectar: {e}")
+            return False
+
+    def execute_command(self, command):
+        if self.client is None:
+            return "❌ No conectado"
+
+        stdin, stdout, stderr = self.client.exec_command(command)
+        output = stdout.read().decode()
+        error = stderr.read().decode()
+
+        return output if output else error
+
+    def close(self):
+        if self.client:
+            self.client.close()
+
+
+
+# paramiko.SSHClient() → Crea un cliente SSH.
+# set_missing_host_key_policy() → Permite conexiones a hosts desconocidos.
+# connect() → Se conecta usando contraseña o clave SSH.
+# exec_command() → Ejecuta un comando en el servidor remoto.
+# close() → Cierra la conexión SSH.
+
+=== Archivo: ./test/test.py ===
+from sqlalchemy import create_engine, inspect
+
+DATABASE_URL = "postgresql://supportIQ:supportIQ@172.20.0.2:5432/supportIQ"
+engine = create_engine(DATABASE_URL)
+
+inspector = inspect(engine)
+print(inspector.get_table_names(schema= "app"))  # Esto imprimirá todas las tablas en la BD
+
+=== Archivo: ./.gitignore ===
+# 🚀 Archivos y carpetas del entorno virtual (evita subir dependencias innecesarias)
+venv/
+env/
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# 🔑 Variables de entorno y credenciales (asegura que no subas contraseñas)
+.env
+*.env
+
+# 📦 Dependencias y compilaciones (evita subir archivos generados)
+node_modules/
+dist/
+build/
+.cache/
+*.egg-info/
+
+# 🗑 Archivos de logs (evita archivos de depuración locales)
+*.log
+logs/
+debug.log
+
+# 💻 Archivos específicos del sistema operativo (ignora archivos generados por Mac y Windows)
+.DS_Store
+Thumbs.db
+
+# 🛠 IDEs y editores (excluye configuraciones de desarrollo local)
+.vscode/
+.idea/
+*.iml
+*.sublime-workspace
+
+# 📄 Archivos de Docker (si usas Docker en el proyecto)
+docker-compose.override.yml
+
+
+=== Archivo: ./output.txt ===
+
+
